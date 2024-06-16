@@ -1,5 +1,16 @@
 ---
 title: "Neuroimage handling tutorial"
+author:
+  name: "Simon Vandekar"
+date: "`r Sys.Date()`"
+format:
+  html:
+    standalone: true
+    code-fold: false
+    toc: true
+    number-sections: true
+    theme: spacelab
+    highlight-style: haddock
 ---
 
 ## Overview
@@ -8,24 +19,22 @@ This is a brief preview of neuroimage I/O, manipulation, and analysis for `R` ta
 
 ## R package dependencies
 
-
 Most `R` neuroimaging packages are hosted on [Neuroconductor](https://neuroconductor.org/) We use the following packages (alphabetically listed):
 
-* `papayaWidget` - embedded interactive visualization of Nifti images in html documents.
-* `pbj` - Parametric bootstrap joint inference for testing in neuroimaging data. Contains visualization functions for `niftiImage` objects.
-* `PCP`  - [Preprocessed connectomes project](https://preprocessed-connectomes-project.org/abide) package. Contains `downloadABIDE` function to get open-access imaging data from the Autism Brain Imaging Data Exchange.
-* `RNifti` - Nifti Image I/O.
+-   `papayaWidget` - embedded interactive visualization of Nifti images in html documents.
+-   `pbj` - Parametric bootstrap joint inference for testing in neuroimaging data. Contains visualization functions for `niftiImage` objects.
+-   `PCP` - [Preprocessed connectomes project](https://preprocessed-connectomes-project.org/abide) package. Contains `downloadABIDE` function to get open-access imaging data from the Autism Brain Imaging Data Exchange.
+-   `RNifti` - Nifti Image I/O.
 
 The following two code chunks install packages if needed and load all the packages required for the tutorial.
 
 ```{r packageList}
 # data frame of packages used in tutorial
 packages = data.frame(
-  packages = c('devtools', 'papayaWidget', 'PCP', 'RNifti', 'fslr'),
-  repos = c('cran', 'nc', 'statimagcoll/PCP', 'nc', 'nc'))
+  packages = c('devtools', 'papayaWidget', 'PCP', 'RNifti', 'fslr', 'pbj'),
+  repos = c('cran', 'nc', 'statimagcoll/PCP', 'nc', 'nc', 'statimagcoll/pbj'))
 inds = which(!packages$packages %in% installed.packages()[,"Package"])
 ```
-
 
 ```{r install, eval=FALSE}
 # neuroconductor installer
@@ -44,22 +53,20 @@ for(ind in inds){
 }
 ```
 
-
 ```{r loadPackages, message=FALSE}
 devtools::install_github('statimagcoll/PCP')
 invisible(sapply(packages$packages, library, character.only=TRUE))
 ```
 
-## Loading and visualizing data using `downloadABIDE`
+## Loading and visualizing data using `ABIDE`
 
-The `PCP::downloadABIDE` function has many options to download preprocessed imaging data in the various modalities  and formats discussed in this course. Here, we will download and visualize several types of data:
+The `PCP::ABIDE` function has many options to download preprocessed imaging data in the various modalities and formats discussed in this course. Here, we will download and visualize several types of data:
 
-* Cortical volumes from [Freesurfer](https://surfer.nmr.mgh.harvard.edu/).
-* Network connectivity data.
-* [fALFF](https://www.sciencedirect.com/science/article/abs/pii/S0165027008002458) voxel-level data in Nifti image format.
+-   Cortical volumes from [Freesurfer](https://surfer.nmr.mgh.harvard.edu/).
+-   Network connectivity data.
+-   [fALFF](https://www.sciencedirect.com/science/article/abs/pii/S0165027008002458) voxel-level data in Nifti image format.
 
 For visualizations, there are many quality checks we might make before analyzing the data.
-
 
 ```{r}
 ### DATA LOCATION ###
@@ -70,12 +77,7 @@ templatefile = file.path(datadir, 'abide/neuroimaging/MNI152_T1_3mm.nii.gz')
 ```
 
 
-### Freesurfer cortical volumes
-
-### Network connectivity data
-
 ### fALFF voxel-level data
-
 
 ```{r fALFFdownload, message=FALSE}
 derivative='falff'
@@ -91,21 +93,29 @@ dat = ABIDE(datadir, derivatives=derivative, force=FALSE)
 head(dat$destfile_falff)
 ```
 
-
 ### Visual QC
 
-```{r}
 
+I've displayed the fALFF data for the first 30 subjects below so that we can visually evaluate the data quality.
+There are displayed as gray scale, with brighter colors indicating higher values.
+
+```{r, fig.width=8, fig.height=5, eval=TRUE}
+niftis = readNifti(dat$destfile_falff)
+
+# base R for visualization
+par(mfrow=c(2,5), mar=c(0,0,1.8,0)); 
+# pbj:::image for pbj:::image.niftiImage
+# index - slice to visualize
+# lo - use "layout" to arrange images?
+# limits - bounds for coloring below lower limit is transparent, above is more yellow (or brightest color)
+invisible(lapply(1:30, function(ind) {image(niftis[[ind]], BGimg=templatefile, index=45, lo=FALSE, limits=c(0), crop=FALSE); mtext(dat$sub_id[ind], outer=FALSE, fg='white')} ) )
 ```
-
 
 ## Preprocessing and image manipulation
 
-
-
 ### fALFF mask creation
 
-This excludes participants who have bad coverage. Given the visual quality check in the previous step, this will lean toward excluding subjects with bad image orientation.
+This excludes participants who have bad coverage. Given the visual quality check in the previous step, this will lean toward excluding subjects with bad image orientation. Ideally, it would be better just to visually check all subjects relative to the template image and exclude if they are not spatially registered accurately.
 
 ```{r maskCreation}
 imgs = simplify2array(readNifti(dat$destfile_falff) )
@@ -133,39 +143,183 @@ while(nnzero<30000){
 }
 ```
 
-
-
 ```{r}
 # subset the dataset to the participants we didn't exclude due to coverage
 dat = dat[ dat$sub_id %in% subids,]
 
 # now create the mask
 # load in the first image. We'll replace all values to make the mask
-mask = readNifti(dat$destfile_falff[1])
+overlap = mask = readNifti(dat$destfile_falff[1])
 # clear all values in the mask
 mask[,,] = 0
+overlap[,,] = 0
 # load in all the data again
 imgs = simplify2array(readNifti(dat$destfile_falff) )
 # mask is where every subject has coverage
 mask[,,] = apply(imgs>0, 1:3, all)
+overlap[,,] = apply(imgs>0, 1:3, sum)
+
+maskfile = file.path(datadir, 'abide/neuroimaging/cpac/mask.nii.gz')
 writeNifti(mask, maskfile)
 nvox = sum(mask)
 # get 90th quantile, which we can use for visualization
 ulimit = quantile(apply(imgs, 4, function(x) x[mask!=0]), 0.9)
+rm(imgs)
+niftis = readNifti(dat$destfile_falff)
+template = readNifti(templatefile)
 ```
 
 
-```{r}
-# hardcoded at 90 percentile
-ulimit = 126.95
-niftis = readNifti(dat$destfile_falff)
+This code renders the first 30 participants who passed our visual QA. We've now added the template head as the background image, so that we can see how well each participant fits the space of the template.
 
+```{r, eval=TRUE}
 # base R for visualization
-par(mfrow=c(2,5), mar=c(0,0,2,0))
+par(mfrow=c(2,5), mar=c(0,0,1.8,0))
 # pbj:::image for pbj:::image.niftiImage
 # index - slice to visualize
 # lo - use "layout" to arrange images?
 # limits - bounds for coloring below lower limit is transparent, above is more yellow (or brightest color)
-invisible(lapply(1:length(niftis), function(ind) {image(niftis[[ind]], index=45, lo=FALSE, limits=c(0,ulimit)); mtext(dat$sub_id[ind], outer=FALSE)} ) )
+invisible(lapply(1:30, function(ind) {image(niftis[[ind]], BGimg=templatefile, index=45, lo=FALSE, crop=FALSE, limits=c(0,ulimit)); mtext(dat$sub_id[ind], outer=FALSE)} ) )
 ```
 
+The code below creates a visualization where each voxel value represents the number of people with data at that location. Often, analyses restrict to voxels where everyone has data i.e. where the voxel value is `r nrow(dat)`
+
+```{r overlapVis, fig.width=24, fig.height=24}
+image(overlap, BGimg=template)
+overlapfile=file.path(dirname(maskfile), 'overlap.nii.gz')
+writeNifti(overlap, file=overlapfile)
+# interactive visualization with template as background image
+# n = 1026, voxel value shows how many participants have data in that location.
+papaya(c(templatefile, overlapfile))
+```
+
+
+### `PBJ` Package below
+
+All the code below is an example of working with the `pbj` R package that my group is developing. It's an excerpt from the [User's Guide](https://statimagcoll.github.io/pbjUserGuide/introduction.html#introduction).
+
+
+### Voxel-wise analysis with `lmPBJ`
+
+The following code sets up variables we will use to analyze the data. We assume that the mean value of fALFF for people in the population is a linear function of sex, diagnostic group, site where the data were collected, and the motion covariates.
+We will compare this to a model that does not include diagnosis and another model that does not include age, so that we are testing for the effect of diagnosis and age separately at each location in the fALFF image.
+In addition, we will include weights for each participant that are proportional to the inverse of the the person's mean frame displacement during the scan with the logic being that participants that move more will have noisier data [@vandekar_robust_2019].
+These weights correspond to a working variance structure, i.e. they are an estimate of how we think the variance of the imaging data differs across study participants.
+If we use robust standard error estimates, then the weights do not have to be correctly specified as the inverse of the variance for each participant; more details are given below and in [PBJ analysis methods].
+
+The mask file that was created above will be used to specify where in the image the analysis should be performed. The output file indicates where to save the output of `pbjInference` later in the analysis, and `ncores` controls how many cores will be used to perform the analysis.
+Finally, we include two example vectors of cluster forming thresholds that will be used for inference later.
+
+```{r ABIDEvariables}
+# need age_at_scan in both models for testing nonlinear functions
+form = paste0(" ~ sex + age_at_scan + func_mean_fd + func_fber + func_outlier + dx_group + site_id" )
+formred = paste0(" ~ sex + age_at_scan + func_mean_fd + func_fber + func_outlier + site_id")
+formredAge = paste0(" ~ sex + dx_group + func_mean_fd + func_fber + func_outlier + site_id")
+#  weights for each subject. Can be a character vector
+weights = "func_mean_fd"
+mask = maskfile
+output = paste0(tempfile(), '.rdata')
+ncores = 24
+```
+
+
+The following line fits the model and estimates the coefficient and test statistic for the diagnosis variable. By default, `lmPBJ` uses robust standard errors, which provide consistent standard error and RESI estimates, even if the weights, covariance structure, and mean model are not correctly specified. This means that the results are not sensitive to differences in variance structure related to diagnosis, motion, or site.
+This option can be changed by setting the `robust` argument to `FALSE`.
+The `transform` argument defaults to `t`; this means the test statistics are assumed to be approximately T-distributed at each voxel, and it converts to chi-squared statistics by converting them to $Z$ statistics and squaring them.
+The template file is not required, but makes visualization easier down-the-road.
+
+We can perform a similar analysis of age, using the same full model as input, but using the reduced formula with age removed.
+
+```{r ABIDElmPBJ}
+# remove one person missing mean displacement
+dat = dat[!is.na(dat$func_mean_fd),]
+# DX analysis
+abideDX = lmPBJ(dat$destfile_falff, form=form, formred=formred, mask=mask, data=dat, Winv=dat[,weights], template = templatefile)
+abideDX
+
+# Age analysis
+abideAge = lmPBJ(dat$destfile_falff, form=form, formred=formredAge, mask=mask, data=dat, Winv=dat[,weights], template = templatefile)
+```
+Printing the fitted `statMap` object at the terminal gives information about how the model was fit and the output values.
+We can visualize the results using a lightbox view with the `image` function, which calls the `image.statMap` method for objects of class `statMap` (Figure \@ref(fig:abideDXlightbox)).
+The argument `cft_p=0.05` indicates to show only regions with an uncorrected $p$-value less than $0.05$.
+
+```{r abideDXlightbox, fig.cap=c("Diagnostic differences in fALFF controlling for sex, age, motion, and site. Colors are signed -log10(p) values showing uncorrected $p \\le 0.05$."), fig.width=24, fig.height=24}
+image(abideDX, cft_p=0.05, crop=TRUE)
+```
+
+If the parameter tested is 1-dimensional (such as a T-test), the results are shown by default as signed $-log_{10}(p)$. The results show clusters in posterior cingulate and parietal lobes that are positively associated with ASD diagnosis, as well as small clusters at the midline that are possibly due to motion artifact. The second call to image passes additional named arguments to the `image.niftiImage` function to more easily visualize the results (Figure \@ref(fig:abideDXsag)).
+
+
+```{r abideDXsag, fig.cap="Diagnostic differences in fALFF controlling for sex, age, motion, and site. Colors are signed -log10(p) values showing uncorrected $p \\le 0.05$. for slices `z=28:36`", out.width='70%'}
+image(abideDX, cft_p=0.05, plane='coronal',  index=seq(28, length.out=8), nrow=2, crop=FALSE)
+```
+
+We can also visualize the same result on the effect size scale using the same function with the `cft_s=0.1` argument, which highlights regions where the effect size, $S$, is larger than $0.1$ (a small effect size; Figure \@ref(fig:abideDXlightboxS); see Section REF).
+
+```{r abideDXlightboxS, out.width='70%', fig.cap="Diagnostic differences in fALFF controlling for sex, age, motion, and site. Colors are signed RESI values showing uncorrected $S \\ge 0.1$. for slices `z=28:36`."}
+image(abideDX, cft_s=0.1, plane='sagittal',  index=seq(28, length.out=8), nrow=2)
+```
+
+
+The age analysis highlights regions of the brain in prefrontal cortex where there are differences associated with age, with estimated effect sizes larger than $S=0.1$ and $S=0.15$ (Figures \@ref(fig:ABIDElmPBJage) and \@ref(fig:ABIDElmPBJageSag)).
+Blue is negative and highlights regions where the reduction in fALFF has an effect size larger than $S=0.1$.
+
+```{r ABIDElmPBJage, fig.cap=c("Age-related differences in fALFF controlling for sex, diagnosis, motion, and site. Colors are signed RESI values showing uncorrected $S\\ge 0.1$. for slices `z=20:49`."), fig.height=24, fig.width=24}
+  image(abideAge, cft_s = 0.1, index=20:49)
+```
+```{r ABIDElmPBJageSag, fig.cap=c("Age-related differences in fALFF controlling for sex, diagnosis, motion, and site. Colors are signed RESI values showing uncorrected $S \\ge 0.1$. for slices `x=14:49`."), fig.height=24, fig.width=24}
+  image(abideAge, cft_s = 0.15, index=14:49, plane='sagittal')
+```
+
+### Topological inference (Maxima, CEI, CMI) and other stuff
+
+The [pbj User's Guide](https://statimagcoll.github.io/pbjUserGuide/pbj-tutorials.html#preprocessed-abide-analysis) has the full tutorial on completing a group-level analysis in `R`, including more interactive visualizations and plotting the results of particular regions of interest.
+
+
+### Freesurfer cortical volumes
+
+The cortical volumes estimated automatically by Freesurfer are available from the ABIDE package for download. Because they are regional estimates, they can be stored in a regular data frame object.
+The have not been QCed, so it's up to the user to filter them. Freesurfer QC is typically a hands-on process, but there are some columns in the dataset
+
+```{r}
+derivative = 'freesurferstats'
+fsdat = ABIDE(datadir, derivatives=derivative, force=FALSE)
+
+# a little function to load in the region-wise data.
+# It needs to be parsed from text files
+readStats = function(file){
+  out = readLines(file.path(file, 'lh.aparc.stats'))
+  hdr = rev(grep("^#", out))[1]
+  nams = strsplit(out[hdr], split = ' ')[[1]][-c(1,2)]
+  values = apply(do.call(rbind, strsplit(gsub(' +', ' ', out[(hdr+1):length(out)]), split=' ')), 2, c, simplify = FALSE)
+  names(values) = nams
+  ldf = do.call(data.frame, values)
+  ldf[,'StructName'] = paste0('lh_', ldf[,'StructName'])
+  
+  out = readLines(file.path(file, 'rh.aparc.stats'))
+  hdr = rev(grep("^#", out))[1]
+  nams = strsplit(out[hdr], split = ' ')[[1]][-c(1,2)]
+  values = apply(do.call(rbind, strsplit(gsub(' +', ' ', out[(hdr+1):length(out)]), split=' ')), 2, c, simplify = FALSE)
+  names(values) = nams
+  rdf = do.call(data.frame, values)
+  rdf[,'StructName'] = paste0('rh_', rdf[,'StructName'])
+  # return output
+  out = rbind(ldf, rdf)
+  out[,-1] = apply(out[,-1], 2, as.numeric)
+  out
+}
+
+# loads in all data from DK parcellation in long format
+allVols = do.call(rbind, mapply(function(filename, sub_id){
+  out = readStats(filename)
+  out$sub_id = sub_id
+  out
+}, filename=fsdat$`destdir_stats/lh.aparc.stats`, sub_id=fsdat$sub_id, SIMPLIFY=FALSE) )
+
+
+GM = allVols[ allVols$StructName=='rh_frontalpole', c('sub_id', 'GrayVol')]
+names(GM)[2] = 'rh_frontalpole'
+fsdat = merge(fsdat, GM)
+plot(fsdat$age_at_scan, fsdat$rh_frontalpole)
+```
